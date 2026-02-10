@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: __FIO_PVC_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: noisy-neighbor
+    app.kubernetes.io/component: disk-fio
+    app.kubernetes.io/part-of: noisy-neighbor
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: __FIO_PVC_SIZE__

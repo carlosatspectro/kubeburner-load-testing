@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: noisy-neighbor-probe-{{.PROBE_PHASE}}-
+  namespace: {{.NAMESPACE}}
+  labels:
+    app.kubernetes.io/name: noisy-neighbor
+    app.kubernetes.io/component: probe
+    app.kubernetes.io/part-of: noisy-neighbor
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: noisy-neighbor
+        app.kubernetes.io/component: probe
+        app.kubernetes.io/part-of: noisy-neighbor
+    spec:
+      restartPolicy: Never
+      serviceAccountName: noisy-neighbor-probe
+      containers:
+        - name: probe
+          image: bitnami/kubectl:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PROBE_INTERVAL
+              value: "{{.PROBE_INTERVAL}}"
+            - name: PROBE_DURATION
+              value: "{{.PROBE_DURATION}}"
+            - name: PROBE_TIMEOUT
+              value: "{{.PROBE_TIMEOUT}}"
+            - name: PROBE_PHASE
+              value: "{{.PROBE_PHASE}}"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              probe() {
+                name="$1"
+                shift
+                start_ms="$(date +%s%3N)"
+                set +e
+                "$@" >/dev/null 2>&1
+                exit_code="$?"
+                set -e
+                end_ms="$(date +%s%3N)"
+                latency_ms="$((end_ms - start_ms))"
+                printf '{"ts":"%s","phase":"%s","probe":"%s","latency_ms":%s,"exit_code":%s}\n' \
+                  "$(date -Iseconds)" "$PROBE_PHASE" "$name" "$latency_ms" "$exit_code"
+              }
+              parse_duration_seconds() {
+                duration="$1"
+                case "$duration" in
+                  *s) printf '%s' "${duration%s}" ;;
+                  *m) printf '%s' "$(( ${duration%m} * 60 ))" ;;
+                  *h) printf '%s' "$(( ${duration%h} * 3600 ))" ;;
+                  *) printf '%s' "$duration" ;;
+                esac
+              }
+              duration_secs="$(parse_duration_seconds "$PROBE_DURATION")"
+              end_time="$(( $(date +%s) + duration_secs ))"
+              while [ "$(date +%s)" -lt "$end_time" ]; do
+                probe "readyz" kubectl get --raw="/readyz" --request-timeout="$PROBE_TIMEOUT"
+                probe "nodes" kubectl get nodes --request-timeout="$PROBE_TIMEOUT"
+                probe "pods" kubectl get pods -A --request-timeout="$PROBE_TIMEOUT"
+                sleep "$PROBE_INTERVAL"
+              done

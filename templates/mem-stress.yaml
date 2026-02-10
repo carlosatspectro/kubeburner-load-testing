@@ -1,0 +1,76 @@
+{{- if eq (default "false" .MEM_ENABLED) "true" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noisy-neighbor-mem-step-{{.STEP}}
+  namespace: {{.NAMESPACE}}
+  labels:
+    app.kubernetes.io/name: noisy-neighbor
+    app.kubernetes.io/component: mem-stress
+    app.kubernetes.io/part-of: noisy-neighbor
+    app.kubernetes.io/instance: mem-step-{{.STEP}}
+spec:
+  replicas: {{ mul .STEP .MEM_REPLICAS_STEP }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: noisy-neighbor
+      app.kubernetes.io/component: mem-stress
+      app.kubernetes.io/instance: mem-step-{{.STEP}}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: noisy-neighbor
+        app.kubernetes.io/component: mem-stress
+        app.kubernetes.io/part-of: noisy-neighbor
+        app.kubernetes.io/instance: mem-step-{{.STEP}}
+    spec:
+      containers:
+        - name: mem-stress
+          image: polinux/stress
+          imagePullPolicy: IfNotPresent
+          command:
+            - stress
+          args:
+            - --vm
+            - "{{.MEM_WORKERS}}"
+            - --vm-bytes
+            - '{{ trimSuffix "i" .MEM_BYTES }}'
+            - --vm-hang
+            - "0"
+          resources:
+            requests:
+              cpu: 50m
+              memory: "{{.MEM_BYTES}}"
+            limits:
+              cpu: 500m
+{{- else }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noisy-neighbor-noop-mem-step-{{ default 0 .STEP }}
+  namespace: {{ default "default" .NAMESPACE }}
+  labels:
+    app.kubernetes.io/name: noisy-neighbor
+    app.kubernetes.io/component: mem-stress
+    app.kubernetes.io/part-of: noisy-neighbor
+    app.kubernetes.io/instance: noop-mem-step-{{ default 0 .STEP }}
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: noisy-neighbor
+      app.kubernetes.io/component: mem-stress
+      app.kubernetes.io/instance: noop-mem-step-{{ default 0 .STEP }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: noisy-neighbor
+        app.kubernetes.io/component: mem-stress
+        app.kubernetes.io/part-of: noisy-neighbor
+        app.kubernetes.io/instance: noop-mem-step-{{ default 0 .STEP }}
+    spec:
+      containers:
+        - name: noop
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+{{- end }}

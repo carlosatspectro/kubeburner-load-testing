@@ -1,0 +1,73 @@
+{{- if eq (default "false" .CPU_ENABLED) "true" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noisy-neighbor-cpu-step-{{.STEP}}
+  namespace: {{.NAMESPACE}}
+  labels:
+    app.kubernetes.io/name: noisy-neighbor
+    app.kubernetes.io/component: cpu-stress
+    app.kubernetes.io/part-of: noisy-neighbor
+    app.kubernetes.io/instance: cpu-step-{{.STEP}}
+spec:
+  replicas: {{ mul .STEP .CPU_REPLICAS_STEP }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: noisy-neighbor
+      app.kubernetes.io/component: cpu-stress
+      app.kubernetes.io/instance: cpu-step-{{.STEP}}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: noisy-neighbor
+        app.kubernetes.io/component: cpu-stress
+        app.kubernetes.io/part-of: noisy-neighbor
+        app.kubernetes.io/instance: cpu-step-{{.STEP}}
+    spec:
+      containers:
+        - name: cpu-stress
+          image: polinux/stress
+          imagePullPolicy: IfNotPresent
+          command:
+            - stress
+          args:
+            - --cpu
+            - "{{.CPU_WORKERS}}"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 1000m
+              memory: 256Mi
+{{- else }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noisy-neighbor-noop-cpu-step-{{ default 0 .STEP }}
+  namespace: {{ default "default" .NAMESPACE }}
+  labels:
+    app.kubernetes.io/name: noisy-neighbor
+    app.kubernetes.io/component: cpu-stress
+    app.kubernetes.io/part-of: noisy-neighbor
+    app.kubernetes.io/instance: noop-cpu-step-{{ default 0 .STEP }}
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: noisy-neighbor
+      app.kubernetes.io/component: cpu-stress
+      app.kubernetes.io/instance: noop-cpu-step-{{ default 0 .STEP }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: noisy-neighbor
+        app.kubernetes.io/component: cpu-stress
+        app.kubernetes.io/part-of: noisy-neighbor
+        app.kubernetes.io/instance: noop-cpu-step-{{ default 0 .STEP }}
+    spec:
+      containers:
+        - name: noop
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+{{- end }}

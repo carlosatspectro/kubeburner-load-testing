@@ -1,0 +1,160 @@
+global:
+  waitWhenFinished: false
+
+jobs:
+  # Phase A: baseline (probes only)
+  - name: baseline-probes
+    namespace: noisy-neighbor
+    namespacedIterations: false
+    jobType: create
+    jobIterations: 1
+    qps: 5
+    burst: 10
+    podWait: true
+    waitWhenFinished: true
+    maxWaitTimeout: 10m
+    cleanup: true
+    objects:
+      - objectTemplate: templates/probe-job.yaml
+        inputVars:
+          PROBE_PHASE: baseline
+          PROBE_DURATION: 5m
+          PROBE_INTERVAL: 10s
+          PROBE_TIMEOUT: 5s
+          NAMESPACE: noisy-neighbor
+
+  # Phase B: ramp step 1
+  - name: ramp-step-1
+    namespace: noisy-neighbor
+    namespacedIterations: false
+    jobType: create
+    jobIterations: 1
+    qps: 5
+    burst: 10
+    podWait: true
+    waitWhenFinished: true
+    maxWaitTimeout: 10m
+    cleanup: true
+    objects:
+      - objectTemplate: templates/cpu-stress.yaml
+        inputVars:
+          CPU_ENABLED: "true"
+          STEP: 1
+          CPU_REPLICAS_STEP: 2
+          CPU_WORKERS: 2
+          NAMESPACE: noisy-neighbor
+      - objectTemplate: templates/mem-stress.yaml
+        inputVars:
+          MEM_ENABLED: "true"
+          STEP: 1
+          MEM_REPLICAS_STEP: 1
+          MEM_WORKERS: 1
+          MEM_BYTES: 512Mi
+          NAMESPACE: noisy-neighbor
+      - objectTemplate: templates/disk-fio.yaml
+        inputVars:
+          DISK_ENABLED: "true"
+          STEP: 1
+          FIO_PARALLELISM_STEP: 1
+          FIO_RW: randread
+          FIO_BS: 4k
+          FIO_IODEPTH: 16
+          FIO_SIZE: 1Gi
+          FIO_RUNTIME: 5m
+          FIO_PVC_SIZE: 5Gi
+          FIO_PVC_NAME: noisy-neighbor-fio
+          NAMESPACE: noisy-neighbor
+      - objectTemplate: templates/probe-job.yaml
+        inputVars:
+          PROBE_PHASE: ramp-step-1
+          PROBE_DURATION: 5m
+          PROBE_INTERVAL: 10s
+          PROBE_TIMEOUT: 5s
+          NAMESPACE: noisy-neighbor
+
+  # Phase C: ramp step 2
+  - name: ramp-step-2
+    namespace: noisy-neighbor
+    namespacedIterations: false
+    jobType: create
+    jobIterations: 1
+    qps: 5
+    burst: 10
+    podWait: true
+    waitWhenFinished: true
+    maxWaitTimeout: 10m
+    cleanup: true
+    objects:
+      - objectTemplate: templates/cpu-stress.yaml
+        inputVars:
+          CPU_ENABLED: "true"
+          STEP: 2
+          CPU_REPLICAS_STEP: 2
+          CPU_WORKERS: 2
+          NAMESPACE: noisy-neighbor
+      - objectTemplate: templates/mem-stress.yaml
+        inputVars:
+          MEM_ENABLED: "true"
+          STEP: 2
+          MEM_REPLICAS_STEP: 1
+          MEM_WORKERS: 1
+          MEM_BYTES: 512Mi
+          NAMESPACE: noisy-neighbor
+      - objectTemplate: templates/disk-fio.yaml
+        inputVars:
+          DISK_ENABLED: "true"
+          STEP: 2
+          FIO_PARALLELISM_STEP: 1
+          FIO_RW: randread
+          FIO_BS: 4k
+          FIO_IODEPTH: 16
+          FIO_SIZE: 1Gi
+          FIO_RUNTIME: 5m
+          FIO_PVC_SIZE: 5Gi
+          FIO_PVC_NAME: noisy-neighbor-fio
+          NAMESPACE: noisy-neighbor
+      - objectTemplate: templates/probe-job.yaml
+        inputVars:
+          PROBE_PHASE: ramp-step-2
+          PROBE_DURATION: 5m
+          PROBE_INTERVAL: 10s
+          PROBE_TIMEOUT: 5s
+          NAMESPACE: noisy-neighbor
+
+  # Phase D: recovery (probes only, stress already cleaned up)
+  - name: recovery-probes
+    namespace: noisy-neighbor
+    namespacedIterations: false
+    jobType: create
+    jobIterations: 1
+    qps: 5
+    burst: 10
+    podWait: true
+    waitWhenFinished: true
+    maxWaitTimeout: 10m
+    cleanup: true
+    objects:
+      - objectTemplate: templates/probe-job.yaml
+        inputVars:
+          PROBE_PHASE: recovery
+          PROBE_DURATION: 5m
+          PROBE_INTERVAL: 10s
+          PROBE_TIMEOUT: 5s
+          NAMESPACE: noisy-neighbor
+
+  # Phase E: disk PVC cleanup
+  - name: fio-pvc-cleanup
+    namespace: noisy-neighbor
+    namespacedIterations: false
+    jobType: create
+    jobIterations: 1
+    qps: 5
+    burst: 10
+    waitWhenFinished: true
+    cleanup: true
+    objects:
+      - objectTemplate: templates/fio-pvc-cleanup.yaml
+        inputVars:
+          DISK_ENABLED: "true"
+          FIO_PVC_NAME: noisy-neighbor-fio
+          NAMESPACE: noisy-neighbor
