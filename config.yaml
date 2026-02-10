@@ -1,5 +1,8 @@
 NAMESPACE: noisy-neighbor
 
+# Run ./cleanup.sh before applying RBAC and starting kube-burner (idempotent).
+CLEANUP_BEFORE_RUN: "true"
+
 BASELINE_DURATION: "30s"
 STEP_DURATION: "30s"
 RECOVERY_DURATION: "30s"

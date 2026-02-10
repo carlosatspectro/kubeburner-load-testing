@@ -155,3 +155,5 @@ kubectl -n "$NS" logs -l app.kubernetes.io/component=probe --tail=-1 --prefix=tr
 
 - RBAC objects are intentionally externalized in `manifests/` and are not embedded in workload templates.
 - The base workload file may contain defaults that are overridden at runtime by `run.sh`; runtime patching is the source of truth.
+- Phase jobs (`baseline-probes`, `ramp-step-*`, `recovery-probes`) have `cleanup: false` so probe/stressor resources remain available for post-run log collection.
+- Cleanup of leftovers is handled by `cleanup.sh` (and `CLEANUP_BEFORE_RUN` in `config.yaml`) before the next run.
