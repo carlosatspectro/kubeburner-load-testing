@@ -9,8 +9,8 @@ metadata:
     app.kubernetes.io/component: disk-fio
     app.kubernetes.io/part-of: noisy-neighbor
 spec:
-  parallelism: {{ mul .STEP .FIO_PARALLELISM_STEP }}
-  completions: {{ mul .STEP .FIO_PARALLELISM_STEP }}
+  parallelism: {{ .FIO_PARALLELISM_STEP }}
+  completions: {{ .FIO_PARALLELISM_STEP }}
   backoffLimit: 0
   template:
     metadata:

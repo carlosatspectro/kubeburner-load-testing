@@ -20,7 +20,7 @@ spec:
       serviceAccountName: noisy-neighbor-probe
       containers:
         - name: probe
-          image: bitnami/kubectl:latest
+          image: bitnami/kubectl:1.31.0
           imagePullPolicy: IfNotPresent
           env:
             - name: PROBE_INTERVAL
@@ -36,18 +36,24 @@ spec:
             - -c
             - |
               set -eu
+              seq_num=0
               probe() {
                 name="$1"
                 shift
                 start_ms="$(date +%s%3N)"
                 set +e
-                "$@" >/dev/null 2>&1
+                err="$("$@" 2>&1 >/dev/null)"
                 exit_code="$?"
                 set -e
                 end_ms="$(date +%s%3N)"
                 latency_ms="$((end_ms - start_ms))"
-                printf '{"ts":"%s","phase":"%s","probe":"%s","latency_ms":%s,"exit_code":%s}\n' \
-                  "$(date -Iseconds)" "$PROBE_PHASE" "$name" "$latency_ms" "$exit_code"
+                err_safe=""
+                if [ "$exit_code" -ne 0 ] && [ -n "$err" ]; then
+                  err_safe="$(printf '%s' "$err" | head -c 200 | tr '\n\r\t\\"' '   ..')"
+                fi
+                seq_num=$((seq_num + 1))
+                printf '{"ts":"%s","phase":"%s","probe":"%s","seq":%s,"latency_ms":%s,"exit_code":%s,"error":"%s"}\n' \
+                  "$(date -Iseconds)" "$PROBE_PHASE" "$name" "$seq_num" "$latency_ms" "$exit_code" "$err_safe"
               }
               parse_duration_seconds() {
                 duration="$1"

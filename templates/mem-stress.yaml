@@ -10,7 +10,7 @@ metadata:
     app.kubernetes.io/part-of: noisy-neighbor
     app.kubernetes.io/instance: mem-step-{{.STEP}}
 spec:
-  replicas: {{ mul .STEP .MEM_REPLICAS_STEP }}
+  replicas: {{ .MEM_REPLICAS_STEP }}
   selector:
     matchLabels:
       app.kubernetes.io/name: noisy-neighbor

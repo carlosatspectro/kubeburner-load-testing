@@ -46,21 +46,18 @@ kubectl config use-context kind-kb
 3. Renders `workloads/noisy-neighbor.yaml` into a temp workload file.
 4. Expands ramp template job `ramp-step-1` into `ramp-step-1..STEPS`.
 5. Applies config-driven `inputVars` overrides for probe/cpu/memory/disk/cleanup objects.
-6. Enforces phase wait semantics for `baseline-probes`, `ramp-step-*`, and `recovery-probes`:
-   - `waitWhenFinished: true`
-   - `podWait: false`
-   - `verifyObjects: false`
-   - `jobPause: 0s`
-   - `maxWaitTimeout: 10m`
+6. Sets per-job wait semantics (`waitWhenFinished`, `podWait`, `maxWaitTimeout`) and disables image preloading.
 7. Deletes old noisy-neighbor Deployments/Jobs in the target namespace.
 8. Applies prerequisite manifests (and PVC when disk is enabled).
-9. Executes each job as its own kube-burner invocation in strict order:
-   - `baseline-probes`
-   - `ramp-step-1..N`
-   - `recovery-probes`
-   - `fio-pvc-cleanup`
+9. Extracts each job into a standalone kube-burner config file (`runs/<ts>/build/<phase>.yaml`).
+10. Executes each phase as its own `kube-burner init` invocation in strict sequential order:
+    - `baseline-probes`
+    - `ramp-step-1..N`
+    - *(stress teardown: deletes CPU/MEM deployments and FIO jobs)*
+    - `recovery-probes`
+    - `fio-pvc-cleanup`
 
-This per-job execution guarantees phase serialization even with generateName Jobs and avoids overlap between baseline/ramp/recovery.
+Per-phase execution guarantees sequential ordering. Stress workloads are explicitly torn down before recovery probes run, so recovery measures actual control-plane recovery under zero load.
 
 `workloads/noisy-neighbor.yaml` is treated as a base input. At runtime, `ramp-step-1` is the template source for all ramp expansion; generated ramp jobs replace the original jobs list in the rendered file.
 
@@ -76,14 +73,14 @@ This per-job execution guarantees phase serialization even with generateName Job
 | `PROBE_INTERVAL` | probe loop sleep interval |
 | `PROBE_TIMEOUT` | per-probe kubectl request timeout |
 | `CPU_ENABLED` | enable CPU stress deployment template |
-| `CPU_REPLICAS_STEP` | CPU replicas multiplier per step |
+| `CPU_REPLICAS_STEP` | CPU stress replicas per step (linear: total at step N = N × this value) |
 | `CPU_WORKERS` | `stress --cpu` worker count per pod |
 | `MEM_ENABLED` | enable memory stress deployment template |
-| `MEM_REPLICAS_STEP` | memory replicas multiplier per step |
+| `MEM_REPLICAS_STEP` | memory stress replicas per step (linear: total at step N = N × this value) |
 | `MEM_WORKERS` | `stress --vm` worker count per pod |
 | `MEM_BYTES` | memory stress target bytes per worker |
 | `DISK_ENABLED` | enable fio disk jobs and PVC lifecycle |
-| `FIO_PARALLELISM_STEP` | fio Job parallelism/completions multiplier per step |
+| `FIO_PARALLELISM_STEP` | fio Job parallelism/completions per step (linear: total at step N = N × this value) |
 | `FIO_RW` | fio rw mode |
 | `FIO_BS` | fio block size |
 | `FIO_IODEPTH` | fio iodepth |
@@ -118,10 +115,14 @@ PRINT_RENDERED_PATH=true ./run.sh
 
 ## Run artifacts
 
-- kube-burner writes one `kube-burner-<uuid>.log` file per phase invocation.
-- If you run with `tee`, you also get a single combined console log that shows cross-phase ordering.
+Each run creates a `runs/<timestamp>/` directory containing:
 
-## Validating phase wait behavior
+- `build/` — per-phase kube-burner config files (`baseline-probes.yaml`, `ramp-step-1.yaml`, etc.)
+- `<phase>.log` — per-phase kube-burner log (e.g. `baseline-probes.log`, `ramp-step-1.log`)
+- `probe.jsonl` — probe measurements from all phases (collected from pod logs)
+- `summary.csv` — per-phase, per-probe aggregate metrics (count, avg, p95, errors)
+
+## Validating phase sequencing
 
 Run and capture logs:
 
@@ -129,21 +130,25 @@ Run and capture logs:
 ./run.sh 2>&1 | tee /tmp/noisy-neighbor-run.log
 ```
 
-Check ordering and wait/completion markers:
+Verify sequential execution:
 
 ```bash
-grep -E 'Initializing measurements for job: (baseline-probes|ramp-step-[0-9]+|recovery-probes)|Waiting up to 10m0s for actions to be completed|Actions in namespace .* completed' /tmp/noisy-neighbor-run.log
+grep -E '>>> Phase:|==> Tearing down|==> Stress teardown complete' /tmp/noisy-neighbor-run.log
 ```
 
-Expected pattern is repeating per phase in order:
-
-1. `Initializing measurements for job: <phase>`
-2. `Waiting up to 10m0s for actions to be completed`
-3. `Actions in namespace <ns> completed`
-
-Then the next phase starts.
+Expected output shows phases in strict order, with stress teardown before recovery.
 
 ## Probe output
+
+Each probe emits one JSON line per measurement:
+
+```json
+{"ts":"...","phase":"baseline","probe":"readyz","seq":1,"latency_ms":35,"exit_code":0,"error":""}
+```
+
+Fields: `ts` (ISO-8601), `phase`, `probe` (readyz/nodes/pods), `seq` (monotonic within phase), `latency_ms`, `exit_code`, `error` (stderr, truncated to 200 chars, only populated on failure).
+
+To inspect probe pods manually:
 
 ```bash
 NS="$(yq -r '.NAMESPACE // "noisy-neighbor"' config.yaml)"
@@ -155,5 +160,7 @@ kubectl -n "$NS" logs -l app.kubernetes.io/component=probe --tail=-1 --prefix=tr
 
 - RBAC objects are intentionally externalized in `manifests/` and are not embedded in workload templates.
 - The base workload file may contain defaults that are overridden at runtime by `run.sh`; runtime patching is the source of truth.
-- Phase jobs (`baseline-probes`, `ramp-step-*`, `recovery-probes`) have `cleanup: false` so probe/stressor resources remain available for post-run log collection.
+- Phase jobs have `cleanup: false` so resources remain available for post-run log collection.
+- Stress workloads (CPU/MEM deployments, FIO jobs) are explicitly torn down between the last ramp step and recovery probes.
 - Cleanup of leftovers is handled by `cleanup.sh` (and `CLEANUP_BEFORE_RUN` in `config.yaml`) before the next run.
+- Step ramp is linear: each step adds `REPLICAS_STEP` pods; total at step N = N × `REPLICAS_STEP`.

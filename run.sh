@@ -270,6 +270,63 @@ generate_summary_csv() {
   rm -f "$parsed_tsv" "$sorted_tsv"
 }
 
+extract_phase_files() {
+  mkdir -p "$build_dir"
+  phase_order_file="$build_dir/.phase-order"
+  job_count="$(yq '.jobs | length' "$rendered_file")"
+  : > "$phase_order_file"
+  job_idx=0
+  while [ "$job_idx" -lt "$job_count" ]; do
+    job_name="$(yq -r ".jobs[$job_idx].name" "$rendered_file")"
+    phase_file="$build_dir/${job_name}.yaml"
+    yq "{ \"global\": .global, \"jobs\": [.jobs[$job_idx]] }" "$rendered_file" > "$phase_file"
+    echo "$job_name" >> "$phase_order_file"
+    job_idx=$((job_idx + 1))
+  done
+}
+
+teardown_stress() {
+  echo ""
+  echo "==> Tearing down stress workloads before recovery"
+  kubectl -n "$namespace_value" delete deployment \
+    -l "app.kubernetes.io/part-of=noisy-neighbor,app.kubernetes.io/component=cpu-stress" \
+    --ignore-not-found=true
+  kubectl -n "$namespace_value" delete deployment \
+    -l "app.kubernetes.io/part-of=noisy-neighbor,app.kubernetes.io/component=mem-stress" \
+    --ignore-not-found=true
+  kubectl -n "$namespace_value" delete job \
+    -l "app.kubernetes.io/part-of=noisy-neighbor,app.kubernetes.io/component=disk-fio" \
+    --ignore-not-found=true
+  echo "==> Waiting for stress pods to terminate (timeout 2m)"
+  kubectl -n "$namespace_value" wait pod \
+    -l "app.kubernetes.io/component in (cpu-stress,mem-stress,disk-fio)" \
+    --for=delete --timeout=2m 2>/dev/null || echo "warning: timed out waiting for stress pod deletion"
+  echo "==> Stress teardown complete"
+  echo ""
+}
+
+run_phase() {
+  phase_name="$1"
+  phase_file="$2"
+  phase_log="$run_output_dir/${phase_name}.log"
+  echo ">>> Phase: $phase_name"
+  if kube-burner init -c "$phase_file" > "$phase_log" 2>&1; then
+    cat "$phase_log"
+    return 0
+  fi
+  if grep -qi "preLoadImages\|preloadimages\|unknown field" "$phase_log" 2>/dev/null; then
+    echo "warning: preLoadImages not supported by this kube-burner build; retrying $phase_name without it"
+    yq -i 'del(.global.preLoadImages)' "$phase_file"
+    if kube-burner init -c "$phase_file" > "$phase_log" 2>&1; then
+      cat "$phase_log"
+      return 0
+    fi
+  fi
+  cat "$phase_log" >&2
+  echo "FATAL: phase $phase_name failed; see $phase_log" >&2
+  return 1
+}
+
 kubeconfig_override="$(read_config KUBECONFIG)"
 if [ -n "$kubeconfig_override" ]; then
   export KUBECONFIG="$kubeconfig_override"
@@ -417,6 +474,10 @@ yq -i '
   )
 ' "$rendered_file"
 
+yq -i '.global.preLoadImages = false' "$rendered_file"
+
+build_dir="$run_output_dir/build"
+
 cleanup_before_run="$(read_config CLEANUP_BEFORE_RUN)"
 if [ -z "$cleanup_before_run" ]; then
   cleanup_before_run="true"
@@ -424,11 +485,14 @@ fi
 
 if is_true "$dry_run"; then
   cleanup_rendered="false"
+  mkdir -p "$run_output_dir"
+  extract_phase_files
   echo "WORKLOAD=$rendered_file"
   echo "PROBE_RBAC=$probe_rbac_rendered_file"
   echo "FIO_CLEANUP_RBAC=$fio_cleanup_rbac_rendered_file"
   echo "FIO_PVC=$fio_pvc_rendered_file"
   echo "RUN_OUTPUT_DIR=$run_output_dir"
+  echo "BUILD_DIR=$build_dir"
   if is_true "$cleanup_before_run"; then
     echo "WOULD_RUN=$script_dir/cleanup.sh $namespace_value $fio_pvc_name"
   fi
@@ -438,9 +502,19 @@ if is_true "$dry_run"; then
     echo "WOULD_RUN=kubectl apply -f $fio_pvc_rendered_file"
     echo "WOULD_RUN=kubectl apply -f $fio_cleanup_rbac_rendered_file"
   fi
+  echo ""
   echo "Rendered job names (execution order):"
   yq '.jobs[].name' "$rendered_file"
-  echo "WOULD_RUN=kube-burner init -c $rendered_file"
+  echo ""
+  echo "Per-phase execution plan:"
+  while IFS= read -r _phase_name || [ -n "$_phase_name" ]; do
+    _phase_file="$build_dir/${_phase_name}.yaml"
+    if [ "$_phase_name" = "recovery-probes" ]; then
+      echo "WOULD_RUN=teardown_stress (delete cpu-stress/mem-stress deploys + disk-fio jobs)"
+    fi
+    echo "WOULD_RUN=kube-burner init -c $_phase_file"
+  done < "$build_dir/.phase-order"
+  echo ""
   echo "WOULD_RUN=kubectl -n $namespace_value logs -l app.kubernetes.io/name=noisy-neighbor,app.kubernetes.io/component=probe --tail=-1 --prefix=false > $probe_output_file"
   echo "WOULD_WRITE=$summary_output_file"
   exit 0
@@ -451,9 +525,11 @@ if is_true "$print_rendered_path"; then
   echo "PROBE_RBAC=$probe_rbac_rendered_file"
   echo "FIO_CLEANUP_RBAC=$fio_cleanup_rbac_rendered_file"
   echo "FIO_PVC=$fio_pvc_rendered_file"
+  echo "BUILD_DIR=$build_dir"
 fi
 
 mkdir -p "$run_output_dir"
+extract_phase_files
 
 if is_true "$cleanup_before_run"; then
   "$script_dir/cleanup.sh" "$namespace_value" "$fio_pvc_name"
@@ -469,15 +545,19 @@ fi
 echo "Rendered job names (execution order):"
 yq '.jobs[].name' "$rendered_file"
 echo "Run output directory: $run_output_dir"
+echo ""
 
-kube_burner_log="$run_output_dir/kube-burner.log"
-if kube-burner init -c "$rendered_file" > "$kube_burner_log" 2>&1; then
-  cat "$kube_burner_log"
-else
-  cat "$kube_burner_log" >&2
-  echo "kube-burner init failed; see $kube_burner_log" >&2
-  exit 1
-fi
+while IFS= read -r phase_name || [ -n "$phase_name" ]; do
+  phase_file="$build_dir/${phase_name}.yaml"
+  if [ "$phase_name" = "recovery-probes" ]; then
+    teardown_stress
+  fi
+  if ! run_phase "$phase_name" "$phase_file"; then
+    echo "Aborting: phase $phase_name failed" >&2
+    exit 1
+  fi
+  echo ""
+done < "$build_dir/.phase-order"
 
 collect_probe_logs "$probe_output_file"
 generate_summary_csv "$probe_output_file" "$summary_output_file"
