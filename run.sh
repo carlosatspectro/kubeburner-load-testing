@@ -547,14 +547,16 @@ yq '.jobs[].name' "$rendered_file"
 echo "Run output directory: $run_output_dir"
 echo ""
 
+run_failed=""
 while IFS= read -r phase_name || [ -n "$phase_name" ]; do
   phase_file="$build_dir/${phase_name}.yaml"
   if [ "$phase_name" = "recovery-probes" ]; then
     teardown_stress
   fi
   if ! run_phase "$phase_name" "$phase_file"; then
-    echo "Aborting: phase $phase_name failed" >&2
-    exit 1
+    echo "FATAL: phase $phase_name failed; aborting remaining phases" >&2
+    run_failed="$phase_name"
+    break
   fi
   echo ""
 done < "$build_dir/.phase-order"
@@ -564,3 +566,7 @@ generate_summary_csv "$probe_output_file" "$summary_output_file"
 
 echo "probe.jsonl: $probe_output_file"
 echo "summary.csv: $summary_output_file"
+
+if [ -n "$run_failed" ]; then
+  exit 1
+fi
