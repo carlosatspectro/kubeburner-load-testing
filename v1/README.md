@@ -1,6 +1,6 @@
 # v0 -- Kubernetes Control-Plane Load-Testing Harness
 
-A self-contained harness that uses [kube-burner](https://github.com/kube-burner/kube-burner) to measure Kubernetes API-server responsiveness under incremental CPU and memory stress. No Go toolchain required -- the harness automatically downloads a pinned kube-burner release binary.
+A self-contained harness that uses [kube-burner](https://github.com/kube-burner/kube-burner) to measure Kubernetes API-server responsiveness under configurable CPU, memory, disk, and network stress. No Go toolchain required -- the harness automatically downloads a pinned kube-burner release binary.
 
 The harness works against **any** Kubernetes cluster your `kubectl` can reach -- EKS, GKE, AKS, on-prem, or a local Kind cluster for dry runs.
 
@@ -13,15 +13,106 @@ BASELINE probe  ->  RAMP stress (N steps)  ->  TEARDOWN  ->  RECOVERY probe
 ```
 
 - **Baseline probe** -- Deploys a Job that repeatedly queries the API server (`/readyz`, list nodes, list configmaps) and records latency. This establishes the "quiet" baseline.
-- **Ramp steps** -- For each step, deploys CPU-burn and memory-hog Deployments into isolated namespaces (`kb-stress-1`, `kb-stress-2`, ...) to put pressure on the cluster.
+- **Ramp steps** -- For each step, deploys stress workloads into isolated namespaces (`kb-stress-1`, `kb-stress-2`, ...) to put pressure on the cluster. Which stress types are active (CPU, memory, disk, network) is determined by the contention mode selection at the start of the run.
 - **Teardown** -- Deletes all stress namespaces.
 - **Recovery probe** -- Identical to baseline, measures how quickly the API server returns to normal latency.
 
 Every phase is recorded to `phases.jsonl`, probe measurements go to `probe.jsonl`, and a CSV summary is generated. All artifacts land in a timestamped run directory under `v0/runs/`.
 
-## Preflight (both modes)
+## Contention modes
 
-Before running the harness in either mode, confirm your environment:
+The harness supports four contention modes, each independently enabled or disabled:
+
+| Mode | What it does | Default (interactive) | Default (non-interactive) |
+|------|-------------|----------------------|--------------------------|
+| **cpu** | Infinite busy-loop pods consuming configurable millicores | on | on |
+| **mem** | Pods that fill `/dev/shm` with configurable MB | on | on |
+| **disk** | Pods that continuously write/delete files on an `emptyDir` volume | on | off |
+| **network** | Pods that make continuous HTTPS requests to a configurable target | on | off |
+
+All four modes use `busybox:1.36.1` and require no privileged pods, `NET_ADMIN` capabilities, or PVCs.
+
+### Interactive mode (default)
+
+When you run `v0/run.sh` in a terminal, it prompts for each mode in order before starting the test sequence:
+
+```
+>>> Contention mode selection
+Enable cpu contention? [Y/n]
+Edit cpu settings for this run? [Y/n] n
+Enable mem contention? [Y/n]
+Edit mem settings for this run? [Y/n]
+  MEM replicas per step [1]: 2
+  MEM MB per pod [32]: 64
+Enable disk contention? [Y/n]
+Edit disk settings for this run? [Y/n] n
+Enable network contention? [Y/n] n
+
+>>> Contention modes:
+    cpu     = on   (replicas=1, millicores=50)
+    mem     = on   (replicas=2, mb=64)
+    disk    = on   (replicas=1, mb=64)
+    network = off  (replicas=1, target=kubernetes.default.svc, interval=0.5s)
+```
+
+All enable prompts default to **YES** (press Enter to accept). Settings show their current default in brackets; press Enter to keep the default or type a new value.
+
+After mode selection, the harness also prompts for image registry redirects (useful for air-gapped clusters or private registries).
+
+### Non-interactive mode
+
+Set `NONINTERACTIVE=1` to skip all prompts and use defaults. Conservative defaults are applied: CPU and memory on, disk and network off.
+
+```bash
+NONINTERACTIVE=1 v0/run.sh
+```
+
+To enable additional modes in non-interactive mode, set the corresponding `MODE_*` variable:
+
+```bash
+NONINTERACTIVE=1 MODE_DISK=on MODE_NETWORK=on v0/run.sh
+```
+
+### Mode-specific settings
+
+Each mode has tunable parameters, settable via interactive prompts, `config.yaml`, or environment variables:
+
+**CPU:**
+
+| Setting | Env var | Default |
+|---------|---------|---------|
+| Replicas per step | `RAMP_CPU_REPLICAS` | `1` |
+| Millicores per pod | `RAMP_CPU_MILLICORES` | `50` |
+
+**Memory:**
+
+| Setting | Env var | Default |
+|---------|---------|---------|
+| Replicas per step | `RAMP_MEM_REPLICAS` | `1` |
+| MB per pod | `RAMP_MEM_MB` | `32` |
+
+**Disk:**
+
+| Setting | Env var | Default |
+|---------|---------|---------|
+| Replicas per step | `RAMP_DISK_REPLICAS` | `1` |
+| MB to write per pod | `RAMP_DISK_MB` | `64` |
+
+Disk stress uses `dd` to write/delete files on an `emptyDir` volume. No PVCs or StorageClasses required.
+
+**Network:**
+
+| Setting | Env var | Default |
+|---------|---------|---------|
+| Replicas per step | `RAMP_NET_REPLICAS` | `1` |
+| Target host | `RAMP_NET_TARGET` | `kubernetes.default.svc` |
+| Request interval (seconds) | `RAMP_NET_INTERVAL` | `0.5` |
+
+Network stress uses `wget` to make HTTPS requests to the target. The default target is the cluster's own API server via its in-cluster service DNS.
+
+## Preflight
+
+Before running the harness, confirm your environment:
 
 ```bash
 # 1. Verify kubectl points at the intended cluster
@@ -71,6 +162,8 @@ With default parameters (`v0/config.yaml`):
 v0/run.sh
 ```
 
+The harness will prompt you to select which contention modes to enable and let you tune per-mode settings before starting. See [Contention modes](#contention-modes) for details.
+
 With a custom config file:
 
 ```bash
@@ -84,7 +177,15 @@ export RAMP_STEPS=3
 export RAMP_CPU_REPLICAS=2
 export RAMP_CPU_MILLICORES=250
 export RAMP_MEM_MB=128
+export MODE_DISK=on
+export RAMP_DISK_MB=128
 v0/run.sh
+```
+
+To skip all prompts:
+
+```bash
+NONINTERACTIVE=1 v0/run.sh
 ```
 
 ### Step 4: Verify artifacts
@@ -98,6 +199,7 @@ ls -dt v0/runs/*/ | head -1
 # Check contents
 RUN_DIR=$(ls -dt v0/runs/*/ | head -1)
 cat "$RUN_DIR/kb-version.txt"
+cat "$RUN_DIR/modes.env"
 cat "$RUN_DIR/phases.jsonl"
 wc -l "$RUN_DIR/probe.jsonl"
 cat "$RUN_DIR/summary.csv"
@@ -121,7 +223,7 @@ v0/scripts/kind-smoke.sh
 This single command will:
 1. Create (or reuse) a Kind cluster named `kb-smoke`
 2. Auto-download kube-burner v2.4.0 if not already present
-3. Apply RBAC and run the full baseline -> ramp -> teardown -> recovery sequence
+3. Run the harness with `NONINTERACTIVE=1` (CPU and memory on, disk and network off)
 4. Assert that all expected artifacts exist and contain the right phases
 5. Print PASS/FAIL and clean up the Kind cluster if it created one
 
@@ -142,15 +244,27 @@ Flat YAML file of default parameters. Each key is uppercased and exported as an 
 | `ramp_cpu_millicores` | `50` | CPU request/limit per stress pod (millicores) |
 | `ramp_mem_replicas` | `1` | Memory-stress Deployments per step |
 | `ramp_mem_mb` | `32` | Memory request/limit per stress pod (Mi) |
+| `ramp_probe_duration` | `10` | Seconds to probe during each ramp step |
+| `ramp_probe_interval` | `2` | Seconds between ramp-step probe iterations |
 | `recovery_probe_duration` | `10` | Seconds to run the recovery probe |
 | `recovery_probe_interval` | `2` | Seconds between recovery probe iterations |
 | `kb_timeout` | `5m` | kube-burner per-phase timeout |
 
-To use a custom config file without editing the defaults:
+### Contention mode variables
 
-```bash
-CONFIG_FILE=v0/configs/eks-small.yaml v0/run.sh
-```
+These control which stress modes are active and their parameters. They can be set via environment variables or `config.yaml`. In interactive mode the enable/disable prompts override the `MODE_*` values; in non-interactive mode (`NONINTERACTIVE=1`) these variables are used directly.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODE_CPU` | `on` | Enable CPU contention |
+| `MODE_MEM` | `on` | Enable memory contention |
+| `MODE_DISK` | `off` | Enable disk contention |
+| `MODE_NETWORK` | `off` | Enable network contention |
+| `RAMP_DISK_REPLICAS` | `1` | Disk-stress Deployments per step |
+| `RAMP_DISK_MB` | `64` | MB to write per disk-stress pod |
+| `RAMP_NET_REPLICAS` | `1` | Network-stress Deployments per step |
+| `RAMP_NET_TARGET` | `kubernetes.default.svc` | Target host for network requests |
+| `RAMP_NET_INTERVAL` | `0.5` | Seconds between network requests per pod |
 
 ### Use a custom kube-burner binary
 
@@ -171,23 +285,31 @@ bash v0/scripts/build-kube-burner.sh
 
 ## Common gotchas
 
-**RBAC already applied automatically.** `run.sh` runs `kubectl apply -f v0/manifests/probe-rbac.yaml` at the start of every run. You do not need to apply it manually, but doing so before the first run is a good way to verify you have the right permissions. If you see permission errors, check that your kubeconfig identity can create namespaces, serviceaccounts, and clusterroles.
+**RBAC already applied automatically.** `run.sh` runs `kubectl apply -f manifests/probe-rbac.yaml` at the start of every run. You do not need to apply it manually, but doing so before the first run is a good way to verify you have the right permissions. If you see permission errors, check that your kubeconfig identity can create namespaces, serviceaccounts, and clusterroles.
 
 **kube-burner version must be v2.4.0.** The harness pins kube-burner v2.4.0 and enforces this on all resolution paths. If you set `KB_BIN` to a binary that reports a different version, `run.sh` will refuse to start. Set `KB_ALLOW_ANY=1` to bypass the version check if you know what you are doing.
 
-**Templates are resolved relative to `v0/`.** `run.sh` changes directory to `v0/` before invoking kube-burner, so the relative template paths in `workloads/*.yaml` resolve correctly. Always invoke the harness as `v0/run.sh` from the repo root, or `./run.sh` from inside `v0/`.
+**Templates are staged per run.** `run.sh` copies templates, workloads, and manifests into a staging directory (`$RUN_DIR/staging/`) before each run. The staged `ramp-step.yaml` is generated to include only the enabled contention modes, and any image rewrites are applied to the staged copies. This keeps every run fully isolated from source files and from other runs.
 
-**Probe pods need internet access to pull images.** The probe Job uses `bitnami/kubectl:latest`. In air-gapped clusters, pre-pull or mirror this image and update `v0/templates/probe-job.yaml`. The stress pods use `busybox:1.36.1`.
+**Probe pods need internet access to pull images.** The probe Job uses `bitnami/kubectl:latest`. In air-gapped clusters, pre-pull or mirror this image and use the image redirect feature (interactive prompt or `IMAGE_MAP_FILE`). The stress pods use `busybox:1.36.1`.
+
+**Disk stress uses emptyDir.** The disk contention mode writes to an `emptyDir` volume, which is backed by the node's filesystem. No PVCs or StorageClasses are required. Write sizes are conservative by default (64 MB).
+
+**Network stress does not require privileged pods.** The network contention mode uses `wget` to generate HTTPS traffic rather than `tc netem`, so no `NET_ADMIN` capability is needed. It runs on any cluster without special permissions.
 
 ## Run artifacts
 
 Each run creates `v0/runs/YYYYMMDD-HHMMSS/` containing:
 
 - **`kb-version.txt`** -- Binary path and full version output
+- **`modes.env`** -- Human-readable KEY=VALUE record of selected contention modes and settings
+- **`modes.json`** -- Machine-readable JSON of the same mode configuration
 - **`phases.jsonl`** -- One JSON line per phase: `{"phase", "uuid", "rc", "start", "end", "elapsed_s"}`
 - **`probe.jsonl`** -- One JSON line per probe check: `{"ts", "phase", "probe", "latency_ms", "exit_code", "seq"}`
 - **`summary.csv`** -- Human-readable CSV of phase results
 - **`phase-*.log`** -- Raw kube-burner output for each phase
+- **`image-map.txt`** -- Image registry rewrites applied (or "(no rewrites)")
+- **`staging/`** -- Staged copies of templates, workloads, and manifests used for this run
 
 ## Folder structure
 
@@ -212,12 +334,14 @@ v0/
 │
 ├── workloads/                      # kube-burner job definitions
 │   ├── probe.yaml                  #   Probe phase (creates a kubectl Job)
-│   └── ramp-step.yaml              #   Ramp phase (creates cpu + mem stress Deployments)
+│   └── ramp-step.yaml              #   Ramp phase (all four stress modes + probe)
 │
 ├── templates/                      # Kubernetes object templates (Go-templated)
-│   ├── probe-job.yaml              #   Job that polls /readyz, list-nodes, list-configmaps
+│   ├── probe-job.yaml              #   Job: polls /readyz, list-nodes, list-configmaps
 │   ├── cpu-stress.yaml             #   Deployment: busybox infinite CPU loop
-│   └── mem-stress.yaml             #   Deployment: busybox dd into /dev/shm
+│   ├── mem-stress.yaml             #   Deployment: busybox dd into /dev/shm
+│   ├── disk-stress.yaml            #   Deployment: busybox dd write/delete on emptyDir
+│   └── net-stress.yaml             #   Deployment: busybox wget loop to target host
 │
 ├── manifests/
 │   └── probe-rbac.yaml             # Namespace, ServiceAccount, ClusterRole for probes
@@ -225,17 +349,21 @@ v0/
 └── runs/                           # Timestamped run artifact directories (gitignored)
     └── YYYYMMDD-HHMMSS/
         ├── kb-version.txt          #   Binary path + version output
+        ├── modes.env               #   Contention mode selection + settings (KEY=VALUE)
+        ├── modes.json              #   Same as modes.env in JSON format
+        ├── image-map.txt           #   Image registry rewrites (if any)
         ├── phases.jsonl            #   One JSON object per phase (rc, elapsed, uuid)
         ├── probe.jsonl             #   Probe measurements (latency, exit code, seq)
         ├── summary.csv             #   CSV summary of all phases
-        └── phase-*.log             #   Per-phase kube-burner stdout/stderr
+        ├── phase-*.log             #   Per-phase kube-burner stdout/stderr
+        └── staging/                #   Staged templates/workloads/manifests for this run
 ```
 
 ## File reference
 
 ### `run.sh`
 
-The main entrypoint. Resolves the kube-burner binary, applies RBAC, parses `config.yaml`, then orchestrates the four-phase sequence. All artifacts are collected into a timestamped `runs/` directory, even on failure.
+The main entrypoint. Resolves the kube-burner binary, parses `config.yaml`, prompts for contention mode selection (unless `NONINTERACTIVE=1`), stages templates into the run directory, generates a filtered `ramp-step.yaml` containing only the enabled modes, optionally applies image registry rewrites, applies RBAC, then orchestrates the four-phase sequence. All artifacts are collected into a timestamped `runs/` directory, even on failure.
 
 **kube-burner resolution order:**
 1. `KB_BIN` env var (must be executable; version-checked against v2.4.0 unless `KB_ALLOW_ANY=1`)
@@ -244,7 +372,7 @@ The main entrypoint. Resolves the kube-burner binary, applies RBAC, parses `conf
 
 ### `scripts/kind-smoke.sh`
 
-Self-contained smoke test for **local dry runs only**. Creates a Kind cluster (or reuses an existing one named `kb-smoke`), runs the harness with small parameter values, then asserts that all expected artifacts exist and contain the right phases. Cleans up the cluster on exit if it created one.
+Self-contained smoke test for **local dry runs only**. Creates a Kind cluster (or reuses an existing one named `kb-smoke`), runs the harness with `NONINTERACTIVE=1` and small parameter values, then asserts that all expected artifacts exist and contain the right phases. Cleans up the cluster on exit if it created one.
 
 ### `scripts/install-kube-burner.sh`
 
@@ -264,7 +392,7 @@ kube-burner job definition for the probe phase. Creates a single Kubernetes Job 
 
 ### `workloads/ramp-step.yaml`
 
-kube-burner job definition for each ramp step. Creates CPU-stress and memory-stress Deployments (from the corresponding templates) in a per-step namespace.
+kube-burner job definition for each ramp step. The checked-in file references all four stress templates (CPU, memory, disk, network) plus the probe job. At runtime, `run.sh` generates a filtered copy in staging that includes only the enabled modes' objects.
 
 ### `templates/probe-job.yaml`
 
@@ -272,11 +400,19 @@ Kubernetes Job template. Runs a shell loop inside a `bitnami/kubectl` container 
 
 ### `templates/cpu-stress.yaml`
 
-Kubernetes Deployment template. Runs a `busybox` container with an infinite `while true; do :; done` loop, consuming a configurable amount of CPU.
+Kubernetes Deployment template. Runs a `busybox` container with an infinite `while true; do :; done` loop, consuming a configurable amount of CPU (millicores).
 
 ### `templates/mem-stress.yaml`
 
 Kubernetes Deployment template. Runs a `busybox` container that uses `dd` to fill `/dev/shm` with a configurable number of megabytes, then sleeps forever.
+
+### `templates/disk-stress.yaml`
+
+Kubernetes Deployment template. Runs a `busybox` container that continuously writes and deletes files on an `emptyDir` volume using `dd`. Write size is configurable via the `diskMb` input variable. No PVC or privileged mode required.
+
+### `templates/net-stress.yaml`
+
+Kubernetes Deployment template. Runs a `busybox` container that makes continuous `wget` HTTPS requests to a configurable target host at a configurable interval. No privileged mode or `NET_ADMIN` capability required. The default target (`kubernetes.default.svc`) is the cluster's own API server.
 
 ### `manifests/probe-rbac.yaml`
 
