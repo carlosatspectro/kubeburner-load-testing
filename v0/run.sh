@@ -82,6 +82,8 @@ RAMP_MEM_REPLICAS="${RAMP_MEM_REPLICAS:-1}"
 RAMP_MEM_MB="${RAMP_MEM_MB:-32}"
 RECOVERY_PROBE_DURATION="${RECOVERY_PROBE_DURATION:-10}"
 RECOVERY_PROBE_INTERVAL="${RECOVERY_PROBE_INTERVAL:-2}"
+RAMP_PROBE_DURATION="${RAMP_PROBE_DURATION:-10}"
+RAMP_PROBE_INTERVAL="${RAMP_PROBE_INTERVAL:-2}"
 KB_TIMEOUT="${KB_TIMEOUT:-5m}"
 SKIP_LOG_FILE="${SKIP_LOG_FILE:-true}"
 
@@ -211,6 +213,8 @@ run_ramp_step() {
   export CPU_REPLICAS="$RAMP_CPU_REPLICAS"
   export MEM_MB="$RAMP_MEM_MB"
   export MEM_REPLICAS="$RAMP_MEM_REPLICAS"
+  export RAMP_PROBE_DURATION
+  export RAMP_PROBE_INTERVAL
 
   rc=0
   "$KB" init "${kb_flags[@]}" 2>&1 | tee "$RUN_DIR/phase-ramp-step-${step}.log" || rc=$?
@@ -218,6 +222,7 @@ run_ramp_step() {
   local end_ts
   end_ts=$(date +%s)
   record_phase "ramp-step-${step}" "$uuid" "$rc" "$start_ts" "$end_ts"
+  collect_probe_logs "ramp-step-${step}"
   return $rc
 }
 

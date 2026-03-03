@@ -99,6 +99,8 @@ assert "recovery phase present" \
 
 assert "probe.jsonl has baseline entries" \
   grep -q '"phase":"baseline"' "${LATEST_RUN}probe.jsonl"
+assert "probe.jsonl has ramp-step-1 entries" \
+  grep -q '"phase":"ramp-step-1"' "${LATEST_RUN}probe.jsonl"
 assert "probe.jsonl has recovery entries" \
   grep -q '"phase":"recovery"' "${LATEST_RUN}probe.jsonl"
 

@@ -6,7 +6,7 @@ jobs:
     jobIterations: 1
     namespace: "kb-stress-{{.STEP}}"
     namespacedIterations: false
-    cleanup: true
+    cleanup: false
     waitWhenFinished: true
     maxWaitTimeout: 2m
     preLoadImages: false
@@ -25,3 +25,20 @@ jobs:
           step: "{{.STEP}}"
           memMb: "{{.MEM_MB}}"
           podReplicas: "{{.MEM_REPLICAS}}"
+  - name: "probe-ramp-step-{{.STEP}}"
+    jobType: create
+    jobIterations: 1
+    namespacedIterations: false
+    cleanup: true
+    waitWhenFinished: true
+    maxWaitTimeout: 3m
+    preLoadImages: false
+    verifyObjects: true
+    errorOnVerify: false
+    objects:
+      - objectTemplate: templates/probe-job.yaml
+        replicas: 1
+        inputVars:
+          phase: "ramp-step-{{.STEP}}"
+          duration: "{{.RAMP_PROBE_DURATION}}"
+          interval: "{{.RAMP_PROBE_INTERVAL}}"
