@@ -322,6 +322,7 @@ YAML
 WORK_DIR="$V0_DIR"
 IMAGE_MAP_ORIG=()
 IMAGE_MAP_REPL=()
+IMAGE_PULL_SECRET="${IMAGE_PULL_SECRET:-}"
 
 collect_image_redirects() {
   local img_list=()
@@ -370,6 +371,11 @@ collect_image_redirects() {
       fi
     done
   fi
+
+  if [ ${#IMAGE_MAP_ORIG[@]} -gt 0 ] && [ -z "$IMAGE_PULL_SECRET" ] && [ "${NONINTERACTIVE:-0}" != "1" ]; then
+    printf 'Image pull secret name (leave empty for none): ' >/dev/tty 2>/dev/null || true
+    read -r IMAGE_PULL_SECRET </dev/tty 2>/dev/null || IMAGE_PULL_SECRET=""
+  fi
 }
 
 apply_image_redirects() {
@@ -400,6 +406,26 @@ apply_image_redirects() {
 }
 
 # ---------------------------------------------------------------------------
+# Inject imagePullSecrets into staged templates
+# ---------------------------------------------------------------------------
+apply_image_pull_secret() {
+  [ -z "${IMAGE_PULL_SECRET:-}" ] && return 0
+  echo ">>> Injecting imagePullSecrets: $IMAGE_PULL_SECRET"
+  while IFS= read -r f; do
+    awk -v secret="$IMAGE_PULL_SECRET" '
+      /^[[:space:]]*containers:/ {
+        match($0, /^[[:space:]]*/);
+        indent = substr($0, RSTART, RLENGTH);
+        printf "%s%s\n", indent, "imagePullSecrets:";
+        printf "%s  - name: %s\n", indent, secret;
+      }
+      { print }
+    ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+  done < <(find "$WORK_DIR/templates" -name '*.yaml' -type f)
+  echo "IMAGE_PULL_SECRET=$IMAGE_PULL_SECRET" >> "$RUN_DIR/modes.env"
+}
+
+# ---------------------------------------------------------------------------
 # Run directory — all artifacts land here
 # ---------------------------------------------------------------------------
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
@@ -412,6 +438,7 @@ collect_image_redirects
 ensure_staging
 generate_ramp_step
 apply_image_redirects
+apply_image_pull_secret
 cd "$WORK_DIR"
 
 MAIN_RC=0

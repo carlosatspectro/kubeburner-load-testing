@@ -57,7 +57,7 @@ Enable network contention? [Y/n] n
 
 All enable prompts default to **YES** (press Enter to accept). Settings show their current default in brackets; press Enter to keep the default or type a new value.
 
-After mode selection, the harness also prompts for image registry redirects (useful for air-gapped clusters or private registries).
+After mode selection, the harness prompts for image registry redirects (useful for air-gapped clusters or private registries). If any images are redirected, it also asks for an optional `imagePullSecrets` name -- the Secret is injected into all pod specs so kubelet can authenticate to the private registry. You are responsible for creating the Secret in the target namespaces beforehand (e.g., via `kubectl create secret docker-registry`).
 
 ### Non-interactive mode
 
@@ -71,6 +71,12 @@ To enable additional modes in non-interactive mode, set the corresponding `MODE_
 
 ```bash
 NONINTERACTIVE=1 MODE_DISK=on MODE_NETWORK=on v0/run.sh
+```
+
+To redirect images and supply a pull secret non-interactively:
+
+```bash
+IMAGE_MAP_FILE=my-images.txt IMAGE_PULL_SECRET=my-registry-creds NONINTERACTIVE=1 v0/run.sh
 ```
 
 ### Mode-specific settings
@@ -265,6 +271,7 @@ These control which stress modes are active and their parameters. They can be se
 | `RAMP_NET_REPLICAS` | `1` | Network-stress Deployments per step |
 | `RAMP_NET_TARGET` | `kubernetes.default.svc` | Target host for network requests |
 | `RAMP_NET_INTERVAL` | `0.5` | Seconds between network requests per pod |
+| `IMAGE_PULL_SECRET` | *(empty)* | Kubernetes Secret name for private registry auth (injected into all pod specs) |
 
 ### Use a custom kube-burner binary
 
@@ -291,7 +298,7 @@ bash v0/scripts/build-kube-burner.sh
 
 **Templates are staged per run.** `run.sh` copies templates, workloads, and manifests into a staging directory (`$RUN_DIR/staging/`) before each run. The staged `ramp-step.yaml` is generated to include only the enabled contention modes, and any image rewrites are applied to the staged copies. This keeps every run fully isolated from source files and from other runs.
 
-**Probe pods need internet access to pull images.** The probe Job uses `bitnami/kubectl:latest`. In air-gapped clusters, pre-pull or mirror this image and use the image redirect feature (interactive prompt or `IMAGE_MAP_FILE`). The stress pods use `busybox:1.36.1`.
+**Probe pods need internet access to pull images.** The probe Job uses `bitnami/kubectl:latest`. In air-gapped clusters, pre-pull or mirror this image and use the image redirect feature (interactive prompt or `IMAGE_MAP_FILE`). If your mirror requires authentication, set `IMAGE_PULL_SECRET` to the name of a pre-existing `docker-registry` Secret in the target namespaces. The stress pods use `busybox:1.36.1`.
 
 **Disk stress uses emptyDir.** The disk contention mode writes to an `emptyDir` volume, which is backed by the node's filesystem. No PVCs or StorageClasses are required. Write sizes are conservative by default (64 MB).
 
