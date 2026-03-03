@@ -1,0 +1,27 @@
+global:
+  gc: false
+jobs:
+  - name: "ramp-step-{{.STEP}}"
+    jobType: create
+    jobIterations: 1
+    namespace: "kb-stress-{{.STEP}}"
+    namespacedIterations: false
+    cleanup: true
+    waitWhenFinished: true
+    maxWaitTimeout: 2m
+    preLoadImages: false
+    verifyObjects: true
+    errorOnVerify: false
+    objects:
+      - objectTemplate: templates/cpu-stress.yaml
+        replicas: 1
+        inputVars:
+          step: "{{.STEP}}"
+          millicores: "{{.CPU_MILLICORES}}"
+          podReplicas: "{{.CPU_REPLICAS}}"
+      - objectTemplate: templates/mem-stress.yaml
+        replicas: 1
+        inputVars:
+          step: "{{.STEP}}"
+          memMb: "{{.MEM_MB}}"
+          podReplicas: "{{.MEM_REPLICAS}}"
