@@ -317,11 +317,13 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# Image registry redirect
+# Image registry redirect (split: collect decisions, then apply to staging)
 # ---------------------------------------------------------------------------
 WORK_DIR="$V0_DIR"
+IMAGE_MAP_ORIG=()
+IMAGE_MAP_REPL=()
 
-setup_image_redirect() {
+collect_image_redirects() {
   local img_list=()
   local seen=""
 
@@ -335,15 +337,11 @@ setup_image_redirect() {
   done < <(grep -h 'image:' "$V0_DIR"/templates/*.yaml "$V0_DIR"/manifests/*.yaml 2>/dev/null || true)
 
   if [ ${#img_list[@]} -eq 0 ]; then
-    echo "(no rewrites)" > "$RUN_DIR/image-map.txt"
     return 0
   fi
 
   echo ">>> Images detected:"
   for img in "${img_list[@]}"; do echo "    $img"; done
-
-  local map_orig=()
-  local map_repl=()
 
   if [ -n "${IMAGE_MAP_FILE:-}" ] && [ -f "${IMAGE_MAP_FILE:-}" ]; then
     echo ">>> Loading image map from $IMAGE_MAP_FILE"
@@ -351,32 +349,31 @@ setup_image_redirect() {
       orig=$(echo "$orig" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
       repl=$(echo "$repl" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
       [[ -z "$orig" || -z "$repl" || "$orig" = \#* ]] && continue
-      map_orig+=("$orig")
-      map_repl+=("$repl")
+      IMAGE_MAP_ORIG+=("$orig")
+      IMAGE_MAP_REPL+=("$repl")
     done < "$IMAGE_MAP_FILE"
   elif [ "${NONINTERACTIVE:-0}" != "1" ]; then
     for img in "${img_list[@]}"; do
-      local answer=""
-      read -r -p "Redirect image registry for '${img}'? [y/N] " answer </dev/tty 2>/dev/null || true
-      case "$answer" in
-        [yY]|[yY][eE][sS])
-          local replacement=""
-          read -r -p "  Enter replacement (full image ref OR registry host): " replacement </dev/tty 2>/dev/null || true
-          [[ -z "$replacement" ]] && continue
-          replacement="${replacement%/}"
-          if [[ "$replacement" == */* ]]; then
-            map_orig+=("$img")
-            map_repl+=("$replacement")
-          else
-            map_orig+=("$img")
-            map_repl+=("${replacement}/${img}")
-          fi
-          ;;
-      esac
+      if prompt_yn "Redirect image registry for '${img}'? [y/N]" "n"; then
+        local replacement=""
+        printf '  Enter replacement (full image ref OR registry host): ' >/dev/tty 2>/dev/null || true
+        read -r replacement </dev/tty 2>/dev/null || replacement=""
+        [[ -z "$replacement" ]] && continue
+        replacement="${replacement%/}"
+        if [[ "$replacement" == */* ]]; then
+          IMAGE_MAP_ORIG+=("$img")
+          IMAGE_MAP_REPL+=("$replacement")
+        else
+          IMAGE_MAP_ORIG+=("$img")
+          IMAGE_MAP_REPL+=("${replacement}/${img}")
+        fi
+      fi
     done
   fi
+}
 
-  if [ ${#map_orig[@]} -eq 0 ]; then
+apply_image_redirects() {
+  if [ ${#IMAGE_MAP_ORIG[@]} -eq 0 ]; then
     echo "(no rewrites)" > "$RUN_DIR/image-map.txt"
     echo ">>> No image rewrites."
     return 0
@@ -384,14 +381,14 @@ setup_image_redirect() {
 
   echo ">>> Image rewrites:"
   local i
-  for i in $(seq 0 $((${#map_orig[@]} - 1))); do
-    echo "    ${map_orig[$i]} -> ${map_repl[$i]}"
-    echo "${map_orig[$i]}=${map_repl[$i]}" >> "$RUN_DIR/image-map.txt"
+  for i in $(seq 0 $((${#IMAGE_MAP_ORIG[@]} - 1))); do
+    echo "    ${IMAGE_MAP_ORIG[$i]} -> ${IMAGE_MAP_REPL[$i]}"
+    echo "${IMAGE_MAP_ORIG[$i]}=${IMAGE_MAP_REPL[$i]}" >> "$RUN_DIR/image-map.txt"
   done
 
-  for i in $(seq 0 $((${#map_orig[@]} - 1))); do
-    local orig="${map_orig[$i]}"
-    local repl="${map_repl[$i]}"
+  for i in $(seq 0 $((${#IMAGE_MAP_ORIG[@]} - 1))); do
+    local orig="${IMAGE_MAP_ORIG[$i]}"
+    local repl="${IMAGE_MAP_REPL[$i]}"
     local orig_esc
     orig_esc=$(printf '%s' "$orig" | sed 's/[.[\*^$()+?{|\\]/\\&/g')
     while IFS= read -r f; do
@@ -411,9 +408,10 @@ mkdir -p "$RUN_DIR"
 echo ">>> Run artifacts: $RUN_DIR"
 
 setup_contention_modes
+collect_image_redirects
 ensure_staging
 generate_ramp_step
-setup_image_redirect
+apply_image_redirects
 cd "$WORK_DIR"
 
 MAIN_RC=0
