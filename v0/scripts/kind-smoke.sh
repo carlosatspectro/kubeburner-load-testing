@@ -39,6 +39,15 @@ echo ">>> Waiting for node to be Ready"
 kubectl wait --for=condition=Ready node --all --timeout=60s
 
 # ------------------------------------------------------------------
+# 1b. Pre-load bundled images into Kind cluster
+# ------------------------------------------------------------------
+IMAGES_TAR="$V0_DIR/images/harness-images.tar"
+if [ -f "$IMAGES_TAR" ]; then
+  echo ">>> Pre-loading bundled images into Kind cluster"
+  kind load image-archive "$IMAGES_TAR" --name "$KIND_CLUSTER"
+fi
+
+# ------------------------------------------------------------------
 # 2. Run harness with small values and disk OFF
 # (run.sh resolves the kube-burner binary automatically)
 # ------------------------------------------------------------------
@@ -54,6 +63,7 @@ export RECOVERY_PROBE_DURATION=10
 export RECOVERY_PROBE_INTERVAL=2
 export KB_TIMEOUT=3m
 export SKIP_LOG_FILE=true
+export SKIP_IMAGE_LOAD=1
 export NONINTERACTIVE=1
 
 SMOKE_RC=0

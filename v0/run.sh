@@ -101,6 +101,34 @@ RAMP_NET_TARGET="${RAMP_NET_TARGET:-kubernetes.default.svc}"
 RAMP_NET_INTERVAL="${RAMP_NET_INTERVAL:-0.5}"
 
 # ---------------------------------------------------------------------------
+# CLI flags (-i interactive, -c config prompts, -r registry prompts)
+# ---------------------------------------------------------------------------
+PROMPT_MODES=false
+PROMPT_REGISTRY=false
+
+while getopts "icrh" opt; do
+  case "$opt" in
+    i) PROMPT_MODES=true; PROMPT_REGISTRY=true ;;
+    c) PROMPT_MODES=true ;;
+    r) PROMPT_REGISTRY=true ;;
+    h) echo "Usage: run.sh [-i] [-c] [-r]"
+       echo "  -i  Interactive (prompt for everything)"
+       echo "  -c  Prompt for contention mode selection/settings"
+       echo "  -r  Prompt for image registry redirect and pull secret"
+       echo "  Default: non-interactive, uses config.yaml / env var defaults"
+       exit 0 ;;
+    *) echo "Usage: run.sh [-i] [-c] [-r] [-h]" >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+# Backward compat: NONINTERACTIVE=1 forces non-interactive regardless of flags
+if [ "${NONINTERACTIVE:-0}" = "1" ]; then
+  PROMPT_MODES=false
+  PROMPT_REGISTRY=false
+fi
+
+# ---------------------------------------------------------------------------
 # Interactive helpers
 # ---------------------------------------------------------------------------
 prompt_yn() {
@@ -124,7 +152,7 @@ prompt_value() {
 # Contention mode selection (interactive or non-interactive defaults)
 # ---------------------------------------------------------------------------
 setup_contention_modes() {
-  if [ "${NONINTERACTIVE:-0}" != "1" ]; then
+  if [ "$PROMPT_MODES" = "true" ]; then
     echo ""
     echo ">>> Contention mode selection"
 
@@ -353,7 +381,7 @@ collect_image_redirects() {
       IMAGE_MAP_ORIG+=("$orig")
       IMAGE_MAP_REPL+=("$repl")
     done < "$IMAGE_MAP_FILE"
-  elif [ "${NONINTERACTIVE:-0}" != "1" ]; then
+  elif [ "$PROMPT_REGISTRY" = "true" ]; then
     for img in "${img_list[@]}"; do
       if prompt_yn "Redirect image registry for '${img}'? [y/N]" "n"; then
         local replacement=""
@@ -372,7 +400,7 @@ collect_image_redirects() {
     done
   fi
 
-  if [ ${#IMAGE_MAP_ORIG[@]} -gt 0 ] && [ -z "$IMAGE_PULL_SECRET" ] && [ "${NONINTERACTIVE:-0}" != "1" ]; then
+  if [ ${#IMAGE_MAP_ORIG[@]} -gt 0 ] && [ -z "$IMAGE_PULL_SECRET" ] && [ "$PROMPT_REGISTRY" = "true" ]; then
     printf 'Image pull secret name (leave empty for none): ' >/dev/tty 2>/dev/null || true
     read -r IMAGE_PULL_SECRET </dev/tty 2>/dev/null || IMAGE_PULL_SECRET=""
   fi
@@ -601,6 +629,26 @@ teardown_stress() {
 # ===========================================================================
 #  MAIN SEQUENCE
 # ===========================================================================
+# ---------------------------------------------------------------------------
+# Pre-load bundled images (skip if -r / IMAGE_MAP_FILE / SKIP_IMAGE_LOAD)
+# ---------------------------------------------------------------------------
+IMAGES_TAR="$V0_DIR/images/harness-images.tar"
+if [ -f "$IMAGES_TAR" ] \
+   && [ "$PROMPT_REGISTRY" = "false" ] \
+   && [ -z "${IMAGE_MAP_FILE:-}" ] \
+   && [ "${SKIP_IMAGE_LOAD:-0}" != "1" ]; then
+  echo ">>> Loading bundled images from $IMAGES_TAR"
+  bash "$V0_DIR/scripts/load-images.sh" "$IMAGES_TAR" || {
+    echo "WARN: image load failed; pods will attempt registry pull"
+  }
+else
+  if [ ! -f "$IMAGES_TAR" ]; then
+    echo ">>> No bundled image archive found; pods will pull from registry"
+  else
+    echo ">>> Skipping bundled image load (registry redirect active or SKIP_IMAGE_LOAD=1)"
+  fi
+fi
+
 echo ">>> Setting up RBAC for probes"
 kubectl apply -f "$WORK_DIR/manifests/probe-rbac.yaml"
 

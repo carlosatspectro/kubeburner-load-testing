@@ -18,6 +18,7 @@ spec:
       containers:
         - name: probe
           image: bitnami/kubectl:latest
+          imagePullPolicy: IfNotPresent
           env:
             - name: PHASE
               value: "{{.phase}}"

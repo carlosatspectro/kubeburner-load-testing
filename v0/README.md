@@ -30,11 +30,26 @@ The harness supports four contention modes, each independently enabled or disabl
 | **disk** | Pods that continuously write/delete files on an `emptyDir` volume | on | off |
 | **network** | Pods that make continuous HTTPS requests to a configurable target | on | off |
 
-All four modes use `busybox:1.36.1` and require no privileged pods, `NET_ADMIN` capabilities, or PVCs.
+All four modes use `busybox:1.36.1` and require no privileged pods, `NET_ADMIN` capabilities, or PVCs. Both container images (`busybox:1.36.1` and `bitnami/kubectl:latest`) are bundled in the repo as a tar archive and pre-loaded into the cluster automatically -- no registry access is needed by default.
 
-### Interactive mode (default)
+### CLI flags
 
-When you run `v0/run.sh` in a terminal, it prompts for each mode in order before starting the test sequence:
+By default, `run.sh` runs **non-interactively** using `config.yaml` and environment variable defaults. Use flags to enable interactive prompts:
+
+```
+v0/run.sh              # non-interactive (default)
+v0/run.sh -i           # fully interactive (modes + registry)
+v0/run.sh -c           # prompt for contention mode selection/settings
+v0/run.sh -r           # prompt for image registry redirect + pull secret
+v0/run.sh -cr          # prompt for both
+v0/run.sh -h           # show usage help
+```
+
+`NONINTERACTIVE=1` is still supported for backward compatibility and overrides any flags.
+
+### Interactive mode (`-i` or `-c`)
+
+When you run `v0/run.sh -i` (or `-c`), it prompts for each mode in order before starting the test sequence:
 
 ```
 >>> Contention mode selection
@@ -57,26 +72,20 @@ Enable network contention? [Y/n] n
 
 All enable prompts default to **YES** (press Enter to accept). Settings show their current default in brackets; press Enter to keep the default or type a new value.
 
-After mode selection, the harness prompts for image registry redirects (useful for air-gapped clusters or private registries). If any images are redirected, it also asks for an optional `imagePullSecrets` name -- the Secret is injected into all pod specs so kubelet can authenticate to the private registry. You are responsible for creating the Secret in the target namespaces beforehand (e.g., via `kubectl create secret docker-registry`).
+### Registry redirect (`-i` or `-r`)
 
-### Non-interactive mode
+When you run `v0/run.sh -i` (or `-r`), the harness prompts for image registry redirects (useful for air-gapped clusters or private registries). If any images are redirected, it also asks for an optional `imagePullSecrets` name -- the Secret is injected into all pod specs so kubelet can authenticate to the private registry. You are responsible for creating the Secret in the target namespaces beforehand (e.g., via `kubectl create secret docker-registry`).
 
-Set `NONINTERACTIVE=1` to skip all prompts and use defaults. Conservative defaults are applied: CPU and memory on, disk and network off.
+### Non-interactive overrides
 
-```bash
-NONINTERACTIVE=1 v0/run.sh
-```
-
-To enable additional modes in non-interactive mode, set the corresponding `MODE_*` variable:
+In non-interactive mode (default), use environment variables to control behavior:
 
 ```bash
-NONINTERACTIVE=1 MODE_DISK=on MODE_NETWORK=on v0/run.sh
-```
+# Enable extra contention modes
+MODE_DISK=on MODE_NETWORK=on v0/run.sh
 
-To redirect images and supply a pull secret non-interactively:
-
-```bash
-IMAGE_MAP_FILE=my-images.txt IMAGE_PULL_SECRET=my-registry-creds NONINTERACTIVE=1 v0/run.sh
+# Redirect images via a map file and supply a pull secret
+IMAGE_MAP_FILE=my-images.txt IMAGE_PULL_SECRET=my-registry-creds v0/run.sh
 ```
 
 ### Mode-specific settings
@@ -162,13 +171,23 @@ This creates the `kb-probe` namespace, a `probe-sa` ServiceAccount, and a Cluste
 
 ### Step 3: Run the harness
 
-With default parameters (`v0/config.yaml`):
+With default parameters (`v0/config.yaml`), non-interactive:
 
 ```bash
 v0/run.sh
 ```
 
-The harness will prompt you to select which contention modes to enable and let you tune per-mode settings before starting. See [Contention modes](#contention-modes) for details.
+Fully interactive (contention modes + registry redirect prompts):
+
+```bash
+v0/run.sh -i
+```
+
+Interactive for contention modes only:
+
+```bash
+v0/run.sh -c
+```
 
 With a custom config file:
 
@@ -179,19 +198,7 @@ CONFIG_FILE=v0/configs/eks-small.yaml v0/run.sh
 With environment variable overrides (highest precedence):
 
 ```bash
-export RAMP_STEPS=3
-export RAMP_CPU_REPLICAS=2
-export RAMP_CPU_MILLICORES=250
-export RAMP_MEM_MB=128
-export MODE_DISK=on
-export RAMP_DISK_MB=128
-v0/run.sh
-```
-
-To skip all prompts:
-
-```bash
-NONINTERACTIVE=1 v0/run.sh
+RAMP_STEPS=3 RAMP_CPU_REPLICAS=2 RAMP_CPU_MILLICORES=250 MODE_DISK=on v0/run.sh
 ```
 
 ### Step 4: Verify artifacts
@@ -272,6 +279,7 @@ These control which stress modes are active and their parameters. They can be se
 | `RAMP_NET_TARGET` | `kubernetes.default.svc` | Target host for network requests |
 | `RAMP_NET_INTERVAL` | `0.5` | Seconds between network requests per pod |
 | `IMAGE_PULL_SECRET` | *(empty)* | Kubernetes Secret name for private registry auth (injected into all pod specs) |
+| `SKIP_IMAGE_LOAD` | `0` | Set to `1` to skip loading the bundled image tar into the cluster |
 
 ### Use a custom kube-burner binary
 
@@ -298,7 +306,7 @@ bash v0/scripts/build-kube-burner.sh
 
 **Templates are staged per run.** `run.sh` copies templates, workloads, and manifests into a staging directory (`$RUN_DIR/staging/`) before each run. The staged `ramp-step.yaml` is generated to include only the enabled contention modes, and any image rewrites are applied to the staged copies. This keeps every run fully isolated from source files and from other runs.
 
-**Probe pods need internet access to pull images.** The probe Job uses `bitnami/kubectl:latest`. In air-gapped clusters, pre-pull or mirror this image and use the image redirect feature (interactive prompt or `IMAGE_MAP_FILE`). If your mirror requires authentication, set `IMAGE_PULL_SECRET` to the name of a pre-existing `docker-registry` Secret in the target namespaces. The stress pods use `busybox:1.36.1`.
+**Images are bundled and pre-loaded automatically.** Both images (`busybox:1.36.1` and `bitnami/kubectl:latest`) are shipped as `v0/images/harness-images.tar` and loaded into the cluster at the start of every run. No registry access is needed by default. All templates use `imagePullPolicy: IfNotPresent` so kubelet uses the pre-loaded images. To skip the automatic load (e.g., images are already on the nodes), set `SKIP_IMAGE_LOAD=1`. To use different images or a private registry instead, pass `-r` or set `IMAGE_MAP_FILE`. To refresh the bundled tar (e.g., after a kubectl version bump), run `scripts/save-images.sh` (requires Docker).
 
 **Disk stress uses emptyDir.** The disk contention mode writes to an `emptyDir` volume, which is backed by the node's filesystem. No PVCs or StorageClasses are required. Write sizes are conservative by default (64 MB).
 
@@ -333,10 +341,15 @@ v0/
 ├── configs/                        # Custom config files
 │   └── eks-small.yaml              #   Small EKS test parameters
 │
+├── images/
+│   └── harness-images.tar          # Bundled container images (busybox + kubectl)
+│
 ├── scripts/
 │   ├── kind-smoke.sh               # End-to-end smoke test (Kind + harness + assertions)
 │   ├── install-kube-burner.sh      # Downloads kube-burner v2.4.0 from GitHub Releases
 │   ├── build-kube-burner.sh        # OPTIONAL: build from source (requires Go >= 1.23)
+│   ├── save-images.sh              # Pulls and saves container images to images/harness-images.tar
+│   ├── load-images.sh              # Loads bundled images into the current cluster
 │   └── summarize.sh                # Generates summary.csv from phases.jsonl
 │
 ├── workloads/                      # kube-burner job definitions
@@ -370,7 +383,7 @@ v0/
 
 ### `run.sh`
 
-The main entrypoint. Resolves the kube-burner binary, parses `config.yaml`, prompts for contention mode selection (unless `NONINTERACTIVE=1`), stages templates into the run directory, generates a filtered `ramp-step.yaml` containing only the enabled modes, optionally applies image registry rewrites, applies RBAC, then orchestrates the four-phase sequence. All artifacts are collected into a timestamped `runs/` directory, even on failure.
+The main entrypoint. Accepts `-i` (full interactive), `-c` (contention mode prompts), `-r` (registry redirect prompts), or no flags (non-interactive default). Resolves the kube-burner binary, parses `config.yaml`, stages templates into the run directory, generates a filtered `ramp-step.yaml` containing only the enabled modes, optionally applies image registry rewrites and `imagePullSecrets`, applies RBAC, then orchestrates the four-phase sequence. All artifacts are collected into a timestamped `runs/` directory, even on failure.
 
 **kube-burner resolution order:**
 1. `KB_BIN` env var (must be executable; version-checked against v2.4.0 unless `KB_ALLOW_ANY=1`)
@@ -388,6 +401,14 @@ Downloads kube-burner v2.4.0 from GitHub Releases for the current OS/arch (`darw
 ### `scripts/build-kube-burner.sh`
 
 **Optional.** Builds kube-burner from a local source checkout using Go >= 1.23. Not called automatically by any script. Use only if you need a custom build.
+
+### `scripts/save-images.sh`
+
+Pulls `busybox:1.36.1` and `bitnami/kubectl:latest` via Docker and saves them into `v0/images/harness-images.tar`. Run this to refresh the bundled images (e.g., after a kubectl version bump). Requires Docker.
+
+### `scripts/load-images.sh`
+
+Loads `v0/images/harness-images.tar` into the current cluster. Auto-detects Kind (via kubectl context), k3d, or falls back to `docker load`. Called automatically by `run.sh` unless `-r`, `IMAGE_MAP_FILE`, or `SKIP_IMAGE_LOAD=1` is set.
 
 ### `scripts/summarize.sh`
 
